@@ -187,6 +187,9 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
         const makroBudget = parseMoneyValue(settings['opex_makro_budget'] || '0');
         const capexAnnualBudget = parseMoneyValue(settings['capex_annual_budget'] || '0');
         const opexAnualBudget = parseMoneyValue(settings['opex_anual_budget'] || '0');
+        
+        const capexBase = settings['capex_annual_base'] ? parseMoneyValue(settings['capex_annual_base']) : capexAnnualBudget;
+        const opexAnualBase = settings['opex_anual_base'] ? parseMoneyValue(settings['opex_anual_base']) : opexAnualBudget;
 
         // Fetch table data (single row for current user if not admin)
         let tableQuery = "SELECT * FROM dashboard_data";
@@ -258,9 +261,9 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
         );
         const yearlyCapexSpent = parseMoneyValue(yearlyCapexRows[0].total || 0);
 
-        // Return current budgets directly from settings for configuration consistency
-        const trueOpexAnualBase = opexAnualBudget;
-        const trueCapexBase = capexAnnualBudget;
+        // Return base budgets for configuration consistency and historical percentage retention
+        const trueOpexAnualBase = opexAnualBase;
+        const trueCapexBase = capexBase;
 
         const opexAnualPercent = trueOpexAnualBase > 0
             ? (opexAnualRemaining / trueOpexAnualBase) * 100
@@ -416,8 +419,14 @@ app.post('/api/budget/update', authenticateToken, async (req, res) => {
         if (opex_plazavea_budget !== undefined) updates.push(['opex_plazavea_budget', opex_plazavea_budget]);
         if (opex_vivanda_budget !== undefined) updates.push(['opex_vivanda_budget', opex_vivanda_budget]);
         if (opex_makro_budget !== undefined) updates.push(['opex_makro_budget', opex_makro_budget]);
-        if (capex_annual_budget !== undefined) updates.push(['capex_annual_budget', capex_annual_budget]);
-        if (opex_anual_budget !== undefined) updates.push(['opex_anual_budget', opex_anual_budget]);
+        if (capex_annual_budget !== undefined) {
+             updates.push(['capex_annual_budget', capex_annual_budget]);
+             updates.push(['capex_annual_base', capex_annual_budget]);
+        }
+        if (opex_anual_budget !== undefined) {
+             updates.push(['opex_anual_budget', opex_anual_budget]);
+             updates.push(['opex_anual_base', opex_anual_budget]);
+        }
 
         if (updates.length === 0) {
             return res.status(400).json({ error: 'Al menos un presupuesto es requerido' });

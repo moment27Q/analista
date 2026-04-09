@@ -902,7 +902,6 @@ const Dashboard = () => {
     const opexAnnualPercentage = data?.gauges?.opex_anual_percent ?? 100;
     // OPEX anual remaining value (budget - spent)
     const opexAnualRemainingValue = data?.gauges?.opex_anual ?? 0;
-    const opexAnualBudgetValue = (data?.gauges?.budgets as any)?.opex_anual ?? 0;
     const alerts90 = (data?.gauges?.alerts_90 || []).filter((a: string) => !dismissedAlerts.has(a));
     const activePeriod = data?.gauges?.active_period;
 
@@ -984,7 +983,7 @@ const Dashboard = () => {
                     <Gauge
                         title="OPEX ANUAL"
                         value={formatCurrency(opexAnualRemainingValue)}
-                        percentage={Math.max(0, Math.min(100, (data?.gauges?.opex_anual_spent ?? 0) / (opexAnualBudgetValue || 1) * 100))}
+                        percentage={Math.max(0, Math.min(100, 100 - opexAnnualPercentage))}
                         color="#1c4233"
                         trendText={`Gasto: ${formatCurrency(data?.gauges?.opex_anual_spent ?? 0)}`}
                         trendIsPositive={opexAnnualPercentage > 20}

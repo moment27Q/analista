@@ -394,7 +394,6 @@ const ContributorDashboard = () => {
 
   // OPEX Anual: remaining percentage (starts 100%, goes down)
   const opexAnualRemaining = gauges?.opex_anual ?? 0;
-  const opexAnualBudget = gauges?.opex_anual_budget ?? (gauges?.budgets?.opex_anual ?? 1);
   const opexAnualPercent = gauges?.opex_anual_percent ?? 100;
 
   const opexPlazaVea = gauges?.opex_plazavea ?? 0;
@@ -505,7 +504,7 @@ const ContributorDashboard = () => {
               <Gauge
                 title="OPEX ANUAL"
                 value={formatMoney(opexAnualRemaining)}
-                percentage={Math.max(0, Math.min(100, (dashboard?.gauges?.opex_anual_spent ?? 0) / (opexAnualBudget || 1) * 100))}
+                percentage={Math.max(0, Math.min(100, 100 - opexAnualPercent))}
                 color="#1c4233"
                 trendText={`Gasto: ${formatMoney(dashboard?.gauges?.opex_anual_spent ?? 0)}`}
                 trendIsPositive={opexAnualPercent > 20}
