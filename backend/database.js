@@ -6,10 +6,10 @@ const DEFAULT_ADMIN_PASSWORD = 'password123';
 const LEGACY_ADMIN_HASH = '$2b$10$wT.fBthlY2YqW4L3P7DWeeaLgZ6WvO7/w5L3H.xY9v2BvG4pA/b1y';
 
 const pool = mysql.createPool({
-    host: 'localhost',
-    user: 'root',      // Update as needed for user environment
-    password: '',      // Update as needed for user environment
-    database: 'contabilidad_db',
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'root',      // Update as needed for user environment
+    password: process.env.DB_PASSWORD || '',      // Update as needed for user environment
+    database: process.env.DB_NAME || 'contabilidad_db',
     waitForConnections: true,
     connectionLimit: 10,
     queueLimit: 0
@@ -25,7 +25,34 @@ async function initDb() {
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 username VARCHAR(255) UNIQUE NOT NULL,
                 password VARCHAR(255) NOT NULL,
-                role VARCHAR(50) DEFAULT 'user'
+                role VARCHAR(50) DEFAULT 'user',
+                is_capex_only TINYINT(1) DEFAULT 0,
+                requires_password_change TINYINT(1) DEFAULT 1,
+                password_last_changed TIMESTAMP NULL
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS month_periods (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                start_date DATE NOT NULL,
+                end_date DATE NULL,
+                start_opex_anual DECIMAL(15,2) DEFAULT 0,
+                start_opex_plazavea DECIMAL(15,2) DEFAULT 0,
+                start_opex_vivanda DECIMAL(15,2) DEFAULT 0,
+                start_opex_makro DECIMAL(15,2) DEFAULT 0,
+                start_capex DECIMAL(15,2) DEFAULT 0,
+                end_opex_anual DECIMAL(15,2) NULL,
+                end_opex_plazavea DECIMAL(15,2) NULL,
+                end_opex_vivanda DECIMAL(15,2) NULL,
+                end_opex_makro DECIMAL(15,2) NULL,
+                end_capex DECIMAL(15,2) NULL,
+                spent_plazavea DECIMAL(15,2) DEFAULT 0,
+                spent_vivanda DECIMAL(15,2) DEFAULT 0,
+                spent_makro DECIMAL(15,2) DEFAULT 0,
+                spent_capex DECIMAL(15,2) DEFAULT 0,
+                is_active TINYINT(1) DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `);
 
@@ -36,6 +63,8 @@ async function initDb() {
                 ticket_value VARCHAR(255) DEFAULT '',
                 ot_value VARCHAR(255) DEFAULT '',
                 monto_value VARCHAR(255) DEFAULT '',
+                entidad VARCHAR(255) DEFAULT '',
+                activos VARCHAR(255) DEFAULT '',
                 user_id INT NULL
             )
         `);
@@ -55,6 +84,22 @@ async function initDb() {
                 action_type VARCHAR(255) NOT NULL,
                 description TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS expenses (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id INT NOT NULL,
+                type ENUM('OPEX', 'CAPEX') NOT NULL,
+                entidad VARCHAR(255) NOT NULL,
+                activos VARCHAR(255) DEFAULT '',
+                ticket_number VARCHAR(255),
+                ot_number VARCHAR(255) NOT NULL,
+                monto DECIMAL(15, 2) NOT NULL,
+                expense_date DATE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
             )
         `);
 
@@ -83,14 +128,14 @@ async function initDb() {
         const [rows] = await pool.query("SELECT count(*) as count FROM dashboard_data");
         if (rows[0].count === 0) {
             const defaultData = [
-                ['DIEGO', '', '', ''],
-                ['GIANFRANCO', '', '', ''],
-                ['RAUL', '', '', ''],
-                ['EDWIN', '', '', '']
+                ['DIEGO', '', '', '', ''],
+                ['GIANFRANCO', '', '', '', ''],
+                ['RAUL', '', '', '', ''],
+                ['EDWIN', '', '', '', '']
             ];
 
             for (const data of defaultData) {
-                await pool.query("INSERT INTO dashboard_data (name, ticket_value, ot_value, monto_value) VALUES (?, ?, ?, ?)", data);
+                await pool.query("INSERT INTO dashboard_data (name, ticket_value, ot_value, monto_value, entidad) VALUES (?, ?, ?, ?, ?)", data);
             }
             console.log('Default dashboard data created.');
         }
@@ -134,7 +179,64 @@ async function initDb() {
             }
             await pool.query("UPDATE dashboard_data SET user_id = ? WHERE id = ?", [userId, unlinked.id]);
         }
-        // --- END MIGRATION LOGIC ---
+        // --- OPEX MIGRATION LOGIC ---
+        try {
+            await pool.query("ALTER TABLE dashboard_data ADD COLUMN entidad VARCHAR(255) DEFAULT ''");
+            console.log("Added 'entidad' column to 'dashboard_data' table.");
+            // Reset old OPEX history as requested by the user
+            await pool.query("UPDATE dashboard_data SET ticket_value = '', ot_value = '', monto_value = '', entidad = ''");
+            console.log("Cleared old OPEX historical data for clean start.");
+        } catch (e) {
+            if (e.code !== 'ER_DUP_FIELDNAME') console.error("Error adding entidad:", e.message);
+        }
+
+        // Initialize default budgets if not present
+        const defaultSettings = [
+            ['opex_plazavea_budget', '50000'],
+            ['opex_vivanda_budget', '30000'],
+            ['opex_makro_budget', '20000'],
+            ['capex_annual_budget', '100000'],
+            ['opex_anual_budget', '100000']
+        ];
+        for (const [key, val] of defaultSettings) {
+             await pool.query("INSERT IGNORE INTO settings (setting_key, setting_value) VALUES (?, ?)", [key, val]);
+        }
+        // --- END OPEX MIGRATION LOGIC ---
+
+        // --- ACTIVOS MIGRATION LOGIC ---
+        try {
+            await pool.query("ALTER TABLE dashboard_data ADD COLUMN activos VARCHAR(255) DEFAULT ''");
+            await pool.query("ALTER TABLE expenses ADD COLUMN activos VARCHAR(255) DEFAULT ''");
+            console.log("Added 'activos' column to tables.");
+        } catch (e) {
+            if (e.code !== 'ER_DUP_FIELDNAME') console.error("Error adding activos column:", e.message);
+        }
+        // --- END ACTIVOS MIGRATION LOGIC ---
+
+        // --- IS_CAPEX_ONLY MIGRATION ---
+        try {
+            await pool.query("ALTER TABLE users ADD COLUMN is_capex_only TINYINT(1) DEFAULT 0");
+            console.log("Added 'is_capex_only' column to 'users' table.");
+        } catch (e) {
+            if (e.code !== 'ER_DUP_FIELDNAME') console.error("Error adding is_capex_only:", e.message);
+        }
+        // Mark 'edwin' as capex-only
+        await pool.query("UPDATE users SET is_capex_only = 1 WHERE username = 'edwin'");
+        console.log("Marked 'edwin' as is_capex_only.");
+        // --- END IS_CAPEX_ONLY MIGRATION ---
+
+        // --- PASSWORD MIGRATION LOGIC ---
+        try {
+            await pool.query("ALTER TABLE users ADD COLUMN requires_password_change TINYINT(1) DEFAULT 1");
+        } catch (e) {
+            if (e.code !== 'ER_DUP_FIELDNAME') console.error("Error adding requires_password_change:", e.message);
+        }
+        try {
+            await pool.query("ALTER TABLE users ADD COLUMN password_last_changed TIMESTAMP NULL");
+        } catch (e) {
+            if (e.code !== 'ER_DUP_FIELDNAME') console.error("Error adding password_last_changed:", e.message);
+        }
+        // --- END PASSWORD MIGRATION LOGIC ---
 
     } catch (err) {
         console.error('Database initialization error:', err.message);

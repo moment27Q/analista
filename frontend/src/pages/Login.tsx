@@ -18,7 +18,7 @@ const Login = () => {
         try {
             const trimmedUsername = username.trim();
             const trimmedPassword = password.trim();
-            const response = await fetch('http://localhost:3001/api/login', {
+            const response = await fetch('/api/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username: trimmedUsername, password: trimmedPassword })
@@ -27,9 +27,17 @@ const Login = () => {
             const data = await response.json();
 
             if (response.ok) {
-                localStorage.setItem('token', data.token);
-                localStorage.setItem('role', data.role);
-                navigate('/home');
+                sessionStorage.setItem('token', data.token);
+                sessionStorage.setItem('role', data.role);
+                sessionStorage.setItem('is_capex_only', data.is_capex_only ? 'true' : 'false');
+                sessionStorage.setItem('username', trimmedUsername);
+                sessionStorage.setItem('display_name', data.name || trimmedUsername);
+                
+                if (data.requires_password_change) {
+                    navigate('/change-password');
+                } else {
+                    navigate('/home');
+                }
             } else {
                 setError(data.error || 'Error de inicio de sesión');
             }
@@ -65,7 +73,7 @@ const Login = () => {
                     <div style={{ background: '#052e16', color: 'white', padding: '0.2rem', borderRadius: '4px', display: 'flex' }}>
                         <Building2 size={24} />
                     </div>
-                    Centro Financiero
+                    Control
                 </div>
                 <div style={{ display: 'flex', gap: '2rem', fontSize: '0.9rem', color: '#334155', fontWeight: 500 }}>
                     <span

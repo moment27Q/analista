@@ -27,7 +27,7 @@ const Landing = () => {
     useEffect(() => {
         const fetchSummary = async () => {
             try {
-                const response = await fetch('http://localhost:3001/api/summary');
+                const response = await fetch('/api/summary');
                 if (!response.ok) return;
                 const data = await response.json();
                 setSummary({
@@ -44,7 +44,7 @@ const Landing = () => {
     }, []);
 
     const formatCurrency = (value: number) =>
-        new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+        new Intl.NumberFormat('es-PE', { style: 'currency', currency: 'PEN' }).format(value);
 
     return (
         <div className="layout-container" style={{ background: '#f8fafc', color: '#0f172a' }}>
@@ -62,7 +62,7 @@ const Landing = () => {
                     <div style={{ background: '#052e16', color: 'white', padding: '0.25rem', borderRadius: '4px' }}>
                         <Building2 size={24} />
                     </div>
-                    Financial Hub
+                    Control
                 </div>
                 <div style={{ display: 'flex', gap: '2rem', alignItems: 'center', fontWeight: 500 }}>
                     <button
@@ -89,12 +89,12 @@ const Landing = () => {
                     <div style={{ maxWidth: '50%' }}>
 
                         <h1 style={{ fontSize: '3.5rem', fontWeight: 800, lineHeight: 1.1, marginTop: '1.5rem', marginBottom: '1.5rem', color: '#020617' }}>
-                            Gestione su <br /> presupuesto y <br />rastree gastos <br />personales con <br />
-                            <span style={{ color: '#059669' }}>precisión</span>
+                            Control de <br /> Presupuesto y <br />Gastos de <br />Mantenimiento<br />
+                            <span style={{ color: '#059669' }}>Eléctrico</span>
                         </h1>
 
                         <p style={{ fontSize: '1.1rem', color: '#475569', marginBottom: '2rem', lineHeight: 1.6, maxWidth: '90%' }}>
-                            Una plataforma personal de gestión de gastos diseñada para usted. Consolide sus gastos, automatice informes y obtenga claridad financiera total.
+                            Plataforma centralizada para gestionar su presupuesto anual. Registre OTs, controle el gasto OPEX/CAPEX por sede y obtenga reportes claros al instante.
                         </p>
 
                         <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
@@ -163,17 +163,17 @@ const Landing = () => {
                         CAPACIDADES DE LA PLATAFORMA
                     </span>
                     <h2 style={{ fontSize: '2.5rem', fontWeight: 700, marginTop: '0.5rem', marginBottom: '1rem', maxWidth: '600px' }}>
-                        Todo lo que necesita para mantener la salud financiera
+                        Diseñado para la gestión real del equipo
                     </h2>
                     <p style={{ color: '#475569', marginBottom: '3rem', maxWidth: '700px', lineHeight: 1.6 }}>
-                        Optimice su control de gastos con herramientas creadas específicamente para la gestión financiera personal.
+                        Simplifique la administración de su área con herramientas creadas específicamente para el mantenimiento eléctrico de sus sedes.
                     </p>
 
                     <div style={{ display: 'flex', gap: '2rem' }}>
                         {[
-                            { icon: <BarChart3 />, title: 'Seguimiento en Tiempo Real', desc: 'Monitoree su presupuesto al instante. Notificaciones instantáneas para que nunca se sorprenda al final del mes.' },
-                            { icon: <PieChart />, title: 'Analítica Detallada', desc: 'Profundice en sus hábitos de consumo. Use filtros avanzados para ver exactamente a dónde se destina su dinero.' },
-                            { icon: <FileText />, title: 'Informes Sencillos', desc: 'Exporte sus reportes de gastos personales en un clic, listos para revisar en cualquier momento.' }
+                            { icon: <BarChart3 />, title: 'Control OPEX/CAPEX', desc: 'Desglose automático de su presupuesto por Plaza Vea, Vivanda y Makro. Conozca el saldo restante en vivo.' },
+                            { icon: <PieChart />, title: 'Registro de OTs y Tickets', desc: 'Ingreso directo de gastos diarios por cada miembro de su equipo, manteniendo un historial organizado.' },
+                            { icon: <FileText />, title: 'Reportes en Excel', desc: 'Exporte todos los movimientos y balances de mes con un solo clic para sus cierres financieros.' }
                         ].map((feat, i) => (
                             <div key={i} style={{
                                 flex: 1,
@@ -213,12 +213,12 @@ const Landing = () => {
                         />
                     </div>
                     <div style={{ flex: 1 }}>
-                        <h2 style={{ fontSize: '2rem', fontWeight: 700, marginBottom: '1.5rem' }}>Analítica de Gastos Personales</h2>
+                        <h2 style={{ fontSize: '2rem', fontWeight: 700, marginBottom: '1.5rem' }}>Monitoreo Constante del Equipo</h2>
                         <p style={{ color: '#475569', lineHeight: 1.6, marginBottom: '2rem' }}>
-                            Identifique sus mayores gastos, rastree la utilización de su presupuesto y pronostique gastos futuros basados en datos históricos.
+                            Supervise exactamente en qué se invierte el presupuesto del área, revise el avance de consumos por entidad y tome el control absoluto.
                         </p>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                            {['Límites de gasto por categoría', 'Comparativas mensuales', 'Seguimiento de metas de ahorro'].map((item, i) => (
+                            {['Límites de gasto por Sedes', 'Historial de Cierres de Mes', 'Trazabilidad de gastos por Usuario'].map((item, i) => (
                                 <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#334155', fontWeight: 500 }}>
                                     <CheckCircle2 size={20} color="#059669" />
                                     {item}

@@ -1,0 +1,16 @@
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+  
+  # 1. Ignorar por completo cualquier petición que vaya a /api/ (le pasa el control a la carpeta api)
+  RewriteRule ^api/ - [L]
+  
+  # 2. Evitar bucles infinitos
+  RewriteRule ^index\.html$ - [L]
+  
+  # 3. Reglas SPA: Si no es archivo, si no es directorio, y si no es link, manda a index.html
+  RewriteCond %{REQUEST_FILENAME} !-f
+  RewriteCond %{REQUEST_FILENAME} !-d
+  RewriteCond %{REQUEST_FILENAME} !-l
+  RewriteRule . /index.html [L]
+</IfModule>

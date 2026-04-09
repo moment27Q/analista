@@ -4,10 +4,11 @@ import Landing from './pages/Landing';
 import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import ContributorDashboard from './pages/ContributorDashboard';
+import ChangePassword from './pages/ChangePassword';
 
-// Simple check if token exists in localStorage
+// Simple check if token exists in sessionStorage
 const isAuthenticated = () => {
-  return !!localStorage.getItem('token');
+  return !!sessionStorage.getItem('token');
 };
 
 const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
@@ -18,7 +19,7 @@ const ProtectedRoute = ({ children }: { children: React.ReactNode }) => {
 };
 
 const HomeByRole = () => {
-  const role = localStorage.getItem('role');
+  const role = sessionStorage.getItem('role');
   return role === 'admin' ? <Navigate to="/dashboard" replace /> : <Navigate to="/contributor" replace />;
 };
 
@@ -33,6 +34,7 @@ function App() {
         <Routes>
           <Route path="/" element={<Landing />} />
           <Route path="/login" element={<Login />} />
+          <Route path="/change-password" element={<ProtectedRoute><ChangePassword /></ProtectedRoute>} />
           <Route path="/home" element={<ProtectedRoute><HomeByRole /></ProtectedRoute>} />
           <Route
             path="/dashboard"

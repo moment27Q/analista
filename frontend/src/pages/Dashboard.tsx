@@ -1,16 +1,42 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { RefreshCw, Save, User, RefreshCcw, Send, AlertCircle, Activity, ArrowRight, Building2, Edit2, X, Check, Trash2, Key } from 'lucide-react';
+import { RefreshCw, Save, User, RefreshCcw, Send, AlertCircle, Activity, ArrowRight, Building2, Edit2, X, Check, Trash2, Key, AlertTriangle, PlayCircle, StopCircle } from 'lucide-react';
 import Gauge from '../components/Gauge';
+import { io } from 'socket.io-client';
 
 interface DashboardData {
     gauges: {
         opex_anual: number;
+        opex_anual_budget?: number;
+        opex_anual_percent?: number;
+        opex_anual_spent?: number;
         capex: number;
-        opex_mensual: number;
-        utilization_percent?: number;
+        capex_spent?: number;
+        opex_mensual_total: number;
+        opex_plazavea: number;
+        opex_vivanda: number;
+        opex_makro: number;
+        total_available_percent?: number;
         available_percent?: number;
+        alerts_90?: string[];
+        active_period?: {
+            id: number;
+            start_date: string;
+            start_opex_anual: number;
+            start_opex_plazavea: number;
+            start_opex_vivanda: number;
+            start_opex_makro: number;
+            start_capex: number;
+        } | null;
+        budgets: {
+            plazavea: number;
+            vivanda: number;
+            makro: number;
+            capex: number;
+            opex_anual?: number;
+        };
     };
+    team_expenses?: any[];
     total_budget?: string;
     table_data: {
         id: number;
@@ -18,6 +44,9 @@ interface DashboardData {
         ticket_value: string;
         ot_value: string;
         monto_value: string;
+        entidad: string;
+        activos: string;
+        expense_date?: string;
     }[];
 }
 
@@ -55,14 +84,22 @@ const Dashboard = () => {
     const [resettingAll, setResettingAll] = useState(false);
     const [isProfileDropdownOpen, setIsProfileDropdownOpen] = useState(false);
     const [isHistoryModalOpen, setIsHistoryModalOpen] = useState(false);
+    const [isBudgetsModalOpen, setIsBudgetsModalOpen] = useState(false);
+    const [budgetsForm, setBudgetsForm] = useState({ total: '', plazavea: '', vivanda: '', makro: '', capex: '', opex_anual: '' });
+    const [dismissedAlerts, setDismissedAlerts] = useState<Set<string>>(new Set());
+    const [startingPeriod, setStartingPeriod] = useState(false);
+    const [endingPeriod, setEndingPeriod] = useState(false);
     const navigate = useNavigate();
-    const role = localStorage.getItem('role') || 'user';
+    const role = sessionStorage.getItem('role') || 'user';
+    
+    // Add a ref to track which rows are currently being edited locally
+    const dirtyRowsRef = useRef<Set<number>>(new Set());
 
     const fetchDashboardData = async (silent = false) => {
         if (!silent) setLoading(true);
         try {
-            const token = localStorage.getItem('token');
-            const response = await fetch('http://localhost:3001/api/dashboard', {
+            const token = sessionStorage.getItem('token');
+            const response = await fetch('/api/dashboard', {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
 
@@ -72,10 +109,42 @@ const Dashboard = () => {
             }
 
             const result = await response.json();
-            setData(result);
-            if (result.total_budget) {
-                setEditBudgetValue(result.total_budget);
-            }
+            
+            setData(prevData => {
+                // If it's our first fetch, just set it
+                if (!prevData) {
+                    if (result.total_budget && !isEditingBudget && !isAddingBudget) {
+                        setEditBudgetValue(result.total_budget);
+                    }
+                    return result;
+                }
+
+                // If polling, merge table_data keeping local edits for dirty rows
+                const mergedTableData = result.table_data.map((serverRow: any) => {
+                    if (dirtyRowsRef.current.has(serverRow.id)) {
+                        const localRow = prevData.table_data.find(r => r.id === serverRow.id);
+                        return localRow ? { ...localRow } : serverRow;
+                    }
+                    return serverRow;
+                });
+
+                // Do not update the editBudgetValue state if the user is currently typing in the budget fields.
+                // Using a functional state update guarantees we read the absolute freshest boolean states.
+                setIsEditingBudget(currentIsEditing => {
+                    setIsAddingBudget(currentIsAdding => {
+                        if (result.total_budget && !currentIsEditing && !currentIsAdding) {
+                            setEditBudgetValue(result.total_budget);
+                        }
+                        return currentIsAdding;
+                    });
+                    return currentIsEditing;
+                });
+
+                return {
+                    ...result,
+                    table_data: mergedTableData
+                };
+            });
         } catch (err) {
             console.error('Error fetching data:', err);
         } finally {
@@ -85,8 +154,8 @@ const Dashboard = () => {
 
     const fetchHistory = async () => {
         try {
-            const token = localStorage.getItem('token');
-            const response = await fetch('http://localhost:3001/api/dashboard/history', {
+            const token = sessionStorage.getItem('token');
+            const response = await fetch('/api/dashboard/history', {
                 headers: { 'Authorization': `Bearer ${token}` }
             });
             if (response.ok) {
@@ -101,10 +170,21 @@ const Dashboard = () => {
     useEffect(() => {
         fetchDashboardData();
         fetchHistory();
+
+        const socket = io({ path: '/api/socket.io' });
+        socket.on('dashboard_update', () => {
+            fetchDashboardData(true);
+            fetchHistory();
+        });
+
+        return () => {
+            socket.disconnect();
+        };
     }, []);
 
     const handleLogout = () => {
-        localStorage.removeItem('token');
+        sessionStorage.removeItem('token');
+        sessionStorage.removeItem('role');
         navigate('/login');
     };
 
@@ -121,6 +201,7 @@ const Dashboard = () => {
     };
 
     const handleInputChange = (id: number, field: string, value: string) => {
+        dirtyRowsRef.current.add(id);
         if (!data) return;
         setData({
             ...data,
@@ -130,12 +211,17 @@ const Dashboard = () => {
         });
     };
 
+    const isEdwinOrCapex = (row: any) => {
+        return (row.name || '').toUpperCase() === 'EDWIN' || row.entidad === 'CAPEX';
+    };
+
     const handleSaveRow = async (row: any) => {
         const ticket = String(row.ticket_value || '').trim();
         const ot = String(row.ot_value || '').trim();
         const monto = String(row.monto_value || '').trim();
+        const needsTicket = !isEdwinOrCapex(row);
 
-        if (!ticket || ticket === '0') {
+        if (needsTicket && (!ticket || ticket === '0')) {
             alert('Por favor, ingrese el ID de Ticket.');
             return;
         }
@@ -148,11 +234,23 @@ const Dashboard = () => {
             return;
         }
 
+        const isEdwin = (row.name || '').toUpperCase() === 'EDWIN';
+        if (!isEdwin && !row.entidad) {
+            alert('❌ Por favor, despliega la lista y selecciona la ENTIDAD (Plaza Vea, Vivanda, Makro, o CAPEX) antes de pulsar el botón Guardar.');
+            return;
+        }
+
         setSaving(row.id);
         try {
-            const token = localStorage.getItem('token');
-            const rowPayload = { ...row, name: row.name, clear_after_save: true };
-            const response = await fetch('http://localhost:3001/api/dashboard/update', {
+            const token = sessionStorage.getItem('token');
+            const rowPayload = { 
+                ...row, 
+                name: row.name, 
+                entidad: isEdwinOrCapex(row) ? 'CAPEX' : row.entidad,
+                clear_after_save: true,
+                expense_date: row.expense_date || new Date().toISOString().split('T')[0]
+            };
+            const response = await fetch('/api/dashboard/update', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -167,6 +265,9 @@ const Dashboard = () => {
                 return;
             }
 
+            // Remove from dirty rows since it's saved
+            dirtyRowsRef.current.delete(row.id);
+
             await fetchDashboardData(true);
             await fetchHistory();
         } catch (err) {
@@ -180,8 +281,8 @@ const Dashboard = () => {
     const handleSaveBudget = async () => {
         setSavingBudget(true);
         try {
-            const token = localStorage.getItem('token');
-            const response = await fetch('http://localhost:3001/api/budget/update', {
+            const token = sessionStorage.getItem('token');
+            const response = await fetch('/api/budget/update', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -213,11 +314,11 @@ const Dashboard = () => {
         if (!addBudgetValue || isNaN(Number(addBudgetValue))) return;
         setSavingBudget(true);
         try {
-            const token = localStorage.getItem('token');
+            const token = sessionStorage.getItem('token');
             const currentBudget = Number(data?.total_budget) || 2450000;
             const newTotal = currentBudget + Number(addBudgetValue);
 
-            const response = await fetch('http://localhost:3001/api/budget/update', {
+            const response = await fetch('/api/budget/update', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -250,8 +351,8 @@ const Dashboard = () => {
         if (!newMemberName.trim()) return;
         setAddingMember(true);
         try {
-            const token = localStorage.getItem('token');
-            const response = await fetch('http://localhost:3001/api/dashboard/users/create', {
+            const token = sessionStorage.getItem('token');
+            const response = await fetch('/api/dashboard/users/create', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -270,7 +371,9 @@ const Dashboard = () => {
                             name: newMemberName.trim().toUpperCase(),
                             ticket_value: '',
                             ot_value: '',
-                            monto_value: ''
+                            monto_value: '',
+                            entidad: '',
+                            activos: ''
                         }]
                     });
                 }
@@ -293,10 +396,14 @@ const Dashboard = () => {
     };
 
     const handleDeleteMember = async (id: number) => {
+        if (!window.confirm("Esta accion eliminara al usuario permanentemente y borrara todo su registro asociado al Dashboard. ¿Deseas proceder?")) {
+            return;
+        }
+        
         setDeleting(id);
         try {
-            const token = localStorage.getItem('token');
-            const response = await fetch('http://localhost:3001/api/dashboard/users/delete', {
+            const token = sessionStorage.getItem('token');
+            const response = await fetch('/api/dashboard/users/delete', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -333,8 +440,8 @@ const Dashboard = () => {
         }
         setSavingPassword(true);
         try {
-            const token = localStorage.getItem('token');
-            const response = await fetch('http://localhost:3001/api/dashboard/users/password', {
+            const token = sessionStorage.getItem('token');
+            const response = await fetch('/api/dashboard/users/password', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -360,11 +467,33 @@ const Dashboard = () => {
             setSavingPassword(false);
         }
     };
-    const handleDownloadExcel = () => {
+    const handleDownloadExcel = async () => {
         if (!data || !data.table_data) return;
 
-        // Create Excel XML Spreadsheet format (this forces Excel to open it correctly natively)
-        let xmlString = `<?xml version="1.0"?>
+        let periodHistory: any[] = [];
+        try {
+            const token = sessionStorage.getItem('token');
+            const res = await fetch('/api/period/history', {
+                headers: { 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                const result = await res.json();
+                periodHistory = result.periods || [];
+            }
+        } catch (e) {
+            console.warn('Error fetching period history', e);
+        }
+
+        const gauges = data.gauges;
+        const budgets = gauges?.budgets || { plazavea: 0, vivanda: 0, makro: 0, capex: 0, opex_anual: 0 } as any;
+        const opexAnualBudg = budgets?.opex_anual ?? 0;
+        const opexAnualRem = gauges?.opex_anual ?? 0;
+        const opexAnualSpent = (gauges as any)?.opex_anual_spent ?? 0;
+        const capexBudg = budgets?.capex ?? 0;
+        const capexSpent = (gauges as any)?.capex_spent ?? 0;
+        const capexRem = gauges?.capex ?? 0;
+
+    let xmlString = `<?xml version="1.0"?>
 <?mso-application progid="Excel.Sheet"?>
 <Workbook xmlns="urn:schemas-microsoft-com:office:spreadsheet"
  xmlns:o="urn:schemas-microsoft-com:office:office"
@@ -384,58 +513,175 @@ const Dashboard = () => {
    <Font ss:FontName="Calibri" x:Family="Swiss" ss:Size="11" ss:Color="#FFFFFF" ss:Bold="1"/>
    <Interior ss:Color="#1c4233" ss:Pattern="Solid"/>
   </Style>
+  <Style ss:ID="s63">
+   <Font ss:FontName="Calibri" x:Family="Swiss" ss:Size="11" ss:Bold="1"/>
+   <Interior ss:Color="#dcfce7" ss:Pattern="Solid"/>
+  </Style>
  </Styles>
  <Worksheet ss:Name="Resumen">
   <Table>
-   <Column ss:Width="220"/>
    <Column ss:Width="160"/>
+   <Column ss:Width="140"/>
+   <Column ss:Width="140"/>
+   <Column ss:Width="140"/>`;
+
+        const createResumenBlock = (startDate: string, endDate: string, opexAnualBudg: number, opexAnualSpent: number, opexAnualRem: number, pvBudg: number, pvSpent: number, pvRem: number, viBudg: number, viSpent: number, viRem: number, mkBudg: number, mkSpent: number, mkRem: number, capexBudg: number, capexSpent: number, capexRem: number) => {
+            return `
    <Row>
-    <Cell ss:StyleID="s62"><Data ss:Type="String">Indicador</Data></Cell>
-    <Cell ss:StyleID="s62"><Data ss:Type="String">Valor</Data></Cell>
+    <Cell ss:StyleID="s63"><Data ss:Type="String">FECHA INICIO: ${startDate}</Data></Cell>
+    <Cell ss:StyleID="s63"><Data ss:Type="String"></Data></Cell>
+    <Cell ss:StyleID="s63"><Data ss:Type="String">FECHA FIN: ${endDate}</Data></Cell>
+    <Cell ss:StyleID="s63"><Data ss:Type="String"></Data></Cell>
    </Row>
    <Row>
-    <Cell><Data ss:Type="String">OPEX ANUAL</Data></Cell>
-    <Cell><Data ss:Type="String">${formatCurrency(data?.gauges?.opex_anual ?? 0)}</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Concepto</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Presupuesto Asignado</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Gastado (Actual)</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Restante</Data></Cell>
    </Row>
    <Row>
-    <Cell><Data ss:Type="String">CAPEX</Data></Cell>
-    <Cell><Data ss:Type="String">${formatCurrency(data?.gauges?.capex ?? 0)}</Data></Cell>
+    <Cell><Data ss:Type="String">OPEX Anual</Data></Cell>
+    <Cell><Data ss:Type="Number">${opexAnualBudg}</Data></Cell>
+    <Cell><Data ss:Type="Number">${opexAnualSpent}</Data></Cell>
+    <Cell><Data ss:Type="Number">${opexAnualRem}</Data></Cell>
    </Row>
    <Row>
-    <Cell><Data ss:Type="String">OPEX MENSUAL</Data></Cell>
-    <Cell><Data ss:Type="String">${formatCurrency(data?.gauges?.opex_mensual ?? 0)}</Data></Cell>
+    <Cell><Data ss:Type="String">OPEX Plaza Vea</Data></Cell>
+    <Cell><Data ss:Type="Number">${pvBudg}</Data></Cell>
+    <Cell><Data ss:Type="Number">${pvSpent}</Data></Cell>
+    <Cell><Data ss:Type="Number">${pvRem}</Data></Cell>
    </Row>
    <Row>
-    <Cell><Data ss:Type="String">PRESUPUESTO TOTAL</Data></Cell>
-    <Cell><Data ss:Type="String">${formatCurrency(Number(data?.total_budget || 0))}</Data></Cell>
+    <Cell><Data ss:Type="String">OPEX Vivanda</Data></Cell>
+    <Cell><Data ss:Type="Number">${viBudg}</Data></Cell>
+    <Cell><Data ss:Type="Number">${viSpent}</Data></Cell>
+    <Cell><Data ss:Type="Number">${viRem}</Data></Cell>
    </Row>
+   <Row>
+    <Cell><Data ss:Type="String">OPEX Makro</Data></Cell>
+    <Cell><Data ss:Type="Number">${mkBudg}</Data></Cell>
+    <Cell><Data ss:Type="Number">${mkSpent}</Data></Cell>
+    <Cell><Data ss:Type="Number">${mkRem}</Data></Cell>
+   </Row>
+   <Row>
+    <Cell><Data ss:Type="String">CAPEX Anual</Data></Cell>
+    <Cell><Data ss:Type="Number">${capexBudg}</Data></Cell>
+    <Cell><Data ss:Type="Number">${capexSpent}</Data></Cell>
+    <Cell><Data ss:Type="Number">${capexRem}</Data></Cell>
+   </Row>
+   <Row></Row>`;
+        };
+
+        // First historical periods (sorted normally id ASC to be chronological bottom to top, wait periodHistory is usually DESC, so let's reverse to show oldest first or keep DESC?)
+        // Let's use periodHistory directly
+        periodHistory.slice().reverse().forEach(period => {
+            const startD = (period.start_date || '').split('T')[0];
+            const endD = (period.end_date || '').split('T')[0];
+            const opBudg = Number(period.start_opex_anual || 0);
+            const opRem = Number(period.end_opex_anual || 0);
+            const opSpent = opBudg - opRem; // This is a rough estimation of spent for old records that didn't record spent OPEX Anual.
+            
+            xmlString += createResumenBlock(
+                startD, endD,
+                opBudg, opSpent, opRem,
+                Number(period.start_opex_plazavea || 0), Number(period.spent_plazavea || 0), Number(period.end_opex_plazavea || 0),
+                Number(period.start_opex_vivanda || 0), Number(period.spent_vivanda || 0), Number(period.end_opex_vivanda || 0),
+                Number(period.start_opex_makro || 0), Number(period.spent_makro || 0), Number(period.end_opex_makro || 0),
+                Number(period.start_capex || 0), Number(period.spent_capex || 0), Number(period.end_capex || 0)
+            );
+        });
+
+        // Finally current period
+        const currentStart = gauges?.active_period ? (gauges.active_period.start_date || '').split('T')[0] : 'Actual';
+        const currentEnd = 'En curso';
+        xmlString += createResumenBlock(
+            currentStart, currentEnd,
+            opexAnualBudg, opexAnualSpent, opexAnualRem,
+            budgets.plazavea, gauges?.opex_plazavea ?? 0, budgets.plazavea - (gauges?.opex_plazavea ?? 0),
+            budgets.vivanda, gauges?.opex_vivanda ?? 0, budgets.vivanda - (gauges?.opex_vivanda ?? 0),
+            budgets.makro, gauges?.opex_makro ?? 0, budgets.makro - (gauges?.opex_makro ?? 0),
+            capexBudg, capexSpent, capexRem
+        );
+
+        xmlString += `
   </Table>
- </Worksheet>
+ </Worksheet>`;
+
+        // Historial de Balances (Flat table of all past periods)
+        if (periodHistory.length > 0) {
+            xmlString += `
+ <Worksheet ss:Name="Historial de Balances">
+  <Table>
+   <Row>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">ID</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Inicio</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Fin</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">OPEX Anual (Fin)</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Gasto Plaza Vea</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Gasto Vivanda</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Gasto Makro</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Gasto Total Mensual</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Gasto CAPEX</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">CAPEX (Fin)</Data></Cell>
+   </Row>`;
+
+            periodHistory.forEach(period => {
+                const gPv = Number(period.spent_plazavea || 0);
+                const gViv = Number(period.spent_vivanda || 0);
+                const gMak = Number(period.spent_makro || 0);
+                const gTotal = gPv + gViv + gMak;
+                xmlString += `
+   <Row>
+    <Cell><Data ss:Type="String">Periodo ${period.id}</Data></Cell>
+    <Cell><Data ss:Type="String">${(period.start_date || '').split('T')[0]}</Data></Cell>
+    <Cell><Data ss:Type="String">${(period.end_date || '').split('T')[0]}</Data></Cell>
+    <Cell><Data ss:Type="Number">${period.end_opex_anual || 0}</Data></Cell>
+    <Cell><Data ss:Type="Number">${gPv}</Data></Cell>
+    <Cell><Data ss:Type="Number">${gViv}</Data></Cell>
+    <Cell><Data ss:Type="Number">${gMak}</Data></Cell>
+    <Cell><Data ss:Type="Number">${gTotal}</Data></Cell>
+    <Cell><Data ss:Type="Number">${period.spent_capex || 0}</Data></Cell>
+    <Cell><Data ss:Type="Number">${period.end_capex || 0}</Data></Cell>
+   </Row>`;
+            });
+
+            xmlString += `
+  </Table>
+ </Worksheet>`;
+        }
+
+        xmlString += `
  <Worksheet ss:Name="Registros del Equipo">
   <Table>
+   <Column ss:Width="100"/>
    <Column ss:Width="150"/>
    <Column ss:Width="100"/>
    <Column ss:Width="100"/>
+   <Column ss:Width="120"/>
+   <Column ss:Width="140"/>
    <Column ss:Width="80"/>
    <Row>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Fecha</Data></Cell>
     <Cell ss:StyleID="s62"><Data ss:Type="String">Miembro del Equipo</Data></Cell>
     <Cell ss:StyleID="s62"><Data ss:Type="String">Ticket ID</Data></Cell>
     <Cell ss:StyleID="s62"><Data ss:Type="String">OT Number</Data></Cell>
-    <Cell ss:StyleID="s62"><Data ss:Type="String">Monto ($)</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Entidad</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Activos</Data></Cell>
+    <Cell ss:StyleID="s62"><Data ss:Type="String">Monto (S/.)</Data></Cell>
    </Row>`;
 
-        data.table_data.forEach(row => {
-            const member = (row.name || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const ticket = (row.ticket_value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const ot = (row.ot_value || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const monto = (row.monto_value || '0').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
+        (data.team_expenses || []).forEach((row: any) => {
+            const esc = (s: string) => (s ? String(s) : '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            const formattedDate = row.expense_date ? new Date(row.expense_date).toISOString().split('T')[0] : '';
             xmlString += `
    <Row>
-    <Cell><Data ss:Type="String">${member}</Data></Cell>
-    <Cell><Data ss:Type="String">${ticket}</Data></Cell>
-    <Cell><Data ss:Type="String">${ot}</Data></Cell>
-    <Cell><Data ss:Type="Number">${monto}</Data></Cell>
+    <Cell><Data ss:Type="String">${esc(formattedDate)}</Data></Cell>
+    <Cell><Data ss:Type="String">${esc(row.name)}</Data></Cell>
+    <Cell><Data ss:Type="String">${esc(row.ticket_number)}</Data></Cell>
+    <Cell><Data ss:Type="String">${esc(row.ot_number)}</Data></Cell>
+    <Cell><Data ss:Type="String">${esc(row.entidad)}</Data></Cell>
+    <Cell><Data ss:Type="String">${esc(row.activos)}</Data></Cell>
+    <Cell><Data ss:Type="Number">${row.monto || 0}</Data></Cell>
    </Row>`;
         });
 
@@ -456,17 +702,13 @@ const Dashboard = () => {
    </Row>`;
 
         history.forEach(item => {
-            const created = (item.created_at || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const username = (item.username || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const actionType = (item.action_type || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            const description = (item.description || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
+            const esc = (s: string) => (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             xmlString += `
    <Row>
-    <Cell><Data ss:Type="String">${created}</Data></Cell>
-    <Cell><Data ss:Type="String">${username}</Data></Cell>
-    <Cell><Data ss:Type="String">${actionType}</Data></Cell>
-    <Cell><Data ss:Type="String">${description}</Data></Cell>
+    <Cell><Data ss:Type="String">${esc(item.created_at)}</Data></Cell>
+    <Cell><Data ss:Type="String">${esc(item.username)}</Data></Cell>
+    <Cell><Data ss:Type="String">${esc(item.action_type)}</Data></Cell>
+    <Cell><Data ss:Type="String">${esc(item.description)}</Data></Cell>
    </Row>`;
         });
 
@@ -475,7 +717,6 @@ const Dashboard = () => {
  </Worksheet>
 </Workbook>`;
 
-        // Create Blob and document object link to download
         const blob = new Blob([xmlString], { type: 'application/vnd.ms-excel' });
         const link = document.createElement('a');
         if (link.download !== undefined) {
@@ -489,11 +730,59 @@ const Dashboard = () => {
         }
     };
 
+    const handleOpenBudgetsModal = () => {
+        setBudgetsForm({
+            total: data?.total_budget || '0',
+            plazavea: data?.gauges?.budgets?.plazavea?.toString() || '0',
+            vivanda: data?.gauges?.budgets?.vivanda?.toString() || '0',
+            makro: data?.gauges?.budgets?.makro?.toString() || '0',
+            capex: data?.gauges?.budgets?.capex?.toString() || '0',
+            opex_anual: (data?.gauges?.budgets as any)?.opex_anual?.toString() || '0'
+        });
+        setIsBudgetsModalOpen(true);
+    };
+
+    const handleSaveBudgetsForm = async () => {
+        setSavingBudget(true);
+        try {
+            const token = sessionStorage.getItem('token');
+            const response = await fetch('/api/budget/update', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Bearer ${token}`
+                },
+                body: JSON.stringify({
+                    total_budget: budgetsForm.total,
+                    opex_plazavea_budget: budgetsForm.plazavea,
+                    opex_vivanda_budget: budgetsForm.vivanda,
+                    opex_makro_budget: budgetsForm.makro,
+                    capex_annual_budget: budgetsForm.capex,
+                    opex_anual_budget: budgetsForm.opex_anual
+                })
+            });
+
+            if (response.ok) {
+                setIsBudgetsModalOpen(false);
+                await fetchDashboardData(true);
+                await fetchHistory();
+            } else {
+                const errData = await response.json().catch(() => ({}));
+                alert("No se pudo actualizar presupuestos: " + (errData.error || 'Error desconocido'));
+            }
+        } catch (err) {
+            console.error('Failed to save budgets', err);
+            alert('Error al actualizar presupuestos.');
+        } finally {
+            setSavingBudget(false);
+        }
+    };
+
     const handleResetAllToZero = async () => {
         setResettingAll(true);
         try {
-            const token = localStorage.getItem('token');
-            const response = await fetch('http://localhost:3001/api/dashboard/reset', {
+            const token = sessionStorage.getItem('token');
+            const response = await fetch('/api/dashboard/reset', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -518,9 +807,60 @@ const Dashboard = () => {
         }
     };
 
-    if (loading && !data) {
+    const handleStartPeriod = async () => {
+        if (!window.confirm('¿Confirmas el INICIO DE MES? Se tomará el estado actual como punto de partida del balance.')) return;
+        setStartingPeriod(true);
+        try {
+            const token = sessionStorage.getItem('token');
+            const res = await fetch('/api/period/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                alert('✅ Inicio de mes registrado correctamente.');
+                await fetchDashboardData(true);
+                await fetchHistory();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                alert('Error: ' + (err.error || 'No se pudo iniciar el período'));
+            }
+        } catch (e) {
+            alert('Error de red.');
+        } finally {
+            setStartingPeriod(false);
+        }
+    };
+
+    const handleEndPeriod = async () => {
+        if (!window.confirm('¿Confirmas el FIN DE MES? Se cerrará el período y podrás descargar el balance en el Excel.')) return;
+        setEndingPeriod(true);
+        try {
+            const token = sessionStorage.getItem('token');
+            const res = await fetch('/api/period/end', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` }
+            });
+            if (res.ok) {
+                alert('✅ Fin de mes registrado. Descarga el Excel para ver el balance completo.');
+                await fetchDashboardData(true);
+                await fetchHistory();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                alert('Error: ' + (err.error || 'No se pudo cerrar el período'));
+            }
+        } catch (e) {
+            alert('Error de red.');
+        } finally {
+            setEndingPeriod(false);
+        }
+    };
+
+    if (loading) {
         return (
-            <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f8fafc' }}>
+            <div style={{ display: 'flex', minHeight: '100vh', background: '#f8fafc', color: '#0f172a', alignItems: 'center', justifyContent: 'center', flexDirection: 'column', gap: '2rem' }}>
+                <h1 style={{ fontSize: '2rem', fontWeight: 800, color: '#0f172a', marginBottom: '4px' }}>
+                    Hola, {sessionStorage.getItem('display_name')?.split(' ')[0] || 'Usuario'}
+                </h1>
                 <RefreshCw className="animate-spin" size={40} style={{ color: '#052e16', animation: 'spin 1s linear infinite' }} />
                 <p style={{ marginTop: '1rem', color: '#64748b', fontWeight: 600 }}>Cargando Panel...</p>
                 <style>{`@keyframes spin { 100% { transform: rotate(360deg); } }`}</style>
@@ -529,20 +869,42 @@ const Dashboard = () => {
     }
 
     const formatCurrency = (val: number) => {
-        return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 0 }).format(val);
+        return new Intl.NumberFormat('es-PE', { style: 'currency', currency: 'PEN', minimumFractionDigits: 0 }).format(val);
     };
 
-    const utilizationPercent = Math.max(0, Math.min(100, data?.gauges?.utilization_percent ?? 0));
-    const utilizationLabel = `${utilizationPercent.toFixed(1)}%`;
-    const availablePercent = Math.max(0, Math.min(100, data?.gauges?.available_percent ?? 100 - utilizationPercent));
+    const totalAvailablePercent = Math.max(0, Math.min(100, data?.gauges?.total_available_percent ?? 100));
+    const availableLabel = `${totalAvailablePercent.toFixed(1)}%`;
 
-    const opexMonthlyValue = data?.gauges?.opex_mensual ?? 0;
-    const opexAnnualValue = data?.gauges?.opex_anual ?? 0;
+    const opexPlazaVea = data?.gauges?.opex_plazavea ?? 0;
+    const opexVivanda = data?.gauges?.opex_vivanda ?? 0;
+    const opexMakro = data?.gauges?.opex_makro ?? 0;
     const capexValue = data?.gauges?.capex ?? 0;
 
-    const opexAnnualPercentage = utilizationPercent;
-    const capexPercentage = availablePercent;
-    const opexMonthlyPercentage = utilizationPercent;
+    const budgets = data?.gauges?.budgets || { plazavea: 1, vivanda: 1, makro: 1, capex: 1 };
+    
+    // Plaza Vea Gauge Stats: Show Progress % and "Remaining" as main value
+    const pvRemaining = budgets.plazavea - opexPlazaVea;
+    const plazaveaPercent = budgets.plazavea > 0 ? Math.max(0, Math.min(100, (opexPlazaVea / budgets.plazavea) * 100)) : 0;
+
+    // Vivanda Gauge Stats
+    const viRemaining = budgets.vivanda - opexVivanda;
+    const vivandaPercent = budgets.vivanda > 0 ? Math.max(0, Math.min(100, (opexVivanda / budgets.vivanda) * 100)) : 0;
+
+    // Makro Gauge Stats
+    const mkRemaining = budgets.makro - opexMakro;
+    const makroPercent = budgets.makro > 0 ? Math.max(0, Math.min(100, (opexMakro / budgets.makro) * 100)) : 0;
+
+    // CAPEX Gauge Stats
+    const caRemaining = capexValue; // Backend already calculates budget - spent
+    const caSpent = budgets.capex - caRemaining;
+    const capexPercent = budgets.capex > 0 ? Math.max(0, Math.min(100, (caSpent / budgets.capex) * 100)) : 0;
+
+    const opexAnnualPercentage = data?.gauges?.opex_anual_percent ?? 100;
+    // OPEX anual remaining value (budget - spent)
+    const opexAnualRemainingValue = data?.gauges?.opex_anual ?? 0;
+    const opexAnualBudgetValue = (data?.gauges?.budgets as any)?.opex_anual ?? 0;
+    const alerts90 = (data?.gauges?.alerts_90 || []).filter((a: string) => !dismissedAlerts.has(a));
+    const activePeriod = data?.gauges?.active_period;
 
     return (
         <div style={{ minHeight: '100vh', background: '#f1f5f9', color: '#0f172a', fontFamily: 'Inter, sans-serif' }}>
@@ -556,7 +918,7 @@ const Dashboard = () => {
                     <div style={{ background: '#1c4233', color: 'white', padding: '0.35rem', borderRadius: '6px', display: 'flex' }}>
                         <Building2 size={20} />
                     </div>
-                    Centro Financiero
+                    Control
                 </div>
 
                 <div style={{ display: 'flex', alignItems: 'center', gap: '1rem', position: 'relative' }}>
@@ -618,40 +980,77 @@ const Dashboard = () => {
             <main style={{ padding: '2rem', maxWidth: '1400px', margin: '0 auto' }}>
 
                 {/* GAUGES SECTION */}
-                <div style={{ display: 'flex', gap: '1.5rem', marginBottom: '1.5rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.5rem', marginBottom: '1.5rem' }}>
                     <Gauge
                         title="OPEX ANUAL"
-                        value={formatCurrency(opexAnnualValue)}
-                        percentage={opexAnnualPercentage}
+                        value={formatCurrency(opexAnualRemainingValue)}
+                        percentage={Math.max(0, Math.min(100, (data?.gauges?.opex_anual_spent ?? 0) / (opexAnualBudgetValue || 1) * 100))}
                         color="#1c4233"
-                        trendText={`${utilizationLabel} usado`}
-                        trendIsPositive={utilizationPercent <= 100}
+                        trendText={`Gasto: ${formatCurrency(data?.gauges?.opex_anual_spent ?? 0)}`}
+                        trendIsPositive={opexAnnualPercentage > 20}
+                    />
+                    <Gauge
+                        title="OPEX - PLAZA VEA"
+                        value={formatCurrency(pvRemaining)}
+                        percentage={plazaveaPercent}
+                        color="#10b981"
+                        trendText={`Presupuesto: ${formatCurrency(budgets.plazavea)}`}
+                        trendIsPositive={pvRemaining > 0}
+                    />
+                    <Gauge
+                        title="OPEX - VIVANDA"
+                        value={formatCurrency(viRemaining)}
+                        percentage={vivandaPercent}
+                        color="#f59e0b"
+                        trendText={`Presupuesto: ${formatCurrency(budgets.vivanda)}`}
+                        trendIsPositive={viRemaining > 0}
+                    />
+                    <Gauge
+                        title="OPEX - MAKRO"
+                        value={formatCurrency(mkRemaining)}
+                        percentage={makroPercent}
+                        color="#ef4444"
+                        trendText={`Presupuesto: ${formatCurrency(budgets.makro)}`}
+                        trendIsPositive={mkRemaining > 0}
                     />
                     <Gauge
                         title="CAPEX"
                         value={formatCurrency(capexValue)}
-                        percentage={capexPercentage}
+                        percentage={capexPercent}
                         color="#8b5cf6"
-                        trendText={`${availablePercent.toFixed(1)}% disponible`}
+                        trendText={`Gasto: ${formatCurrency(caSpent)}`}
                         trendIsPositive={capexValue > 0}
-                    />
-                    <Gauge
-                        title="OPEX MENSUAL"
-                        value={formatCurrency(opexMonthlyValue)}
-                        percentage={opexMonthlyPercentage}
-                        color="#10b981"
-                        trendText={`${utilizationLabel} del presupuesto`}
-                        trendIsPositive={utilizationPercent <= 100}
                     />
                 </div>
 
+                {/* 90% ALERTS */}
+                {alerts90.length > 0 && (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginBottom: '1rem' }}>
+                        {alerts90.map((entity: string) => (
+                            <div key={entity} style={{ background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: 10, padding: '0.75rem 1.2rem', display: 'flex', alignItems: 'center', gap: '0.75rem', color: '#92400e' }}>
+                                <AlertTriangle size={18} style={{ flexShrink: 0, color: '#d97706' }} />
+                                <span style={{ flex: 1, fontWeight: 600 }}>
+                                    ⚠️ <strong>Cuidado:</strong> se ha alcanzado el <strong>90% de fondos</strong> de <strong>{entity}</strong>. Considera recargar el presupuesto.
+                                </span>
+                                <button
+                                    onClick={() => setDismissedAlerts(prev => new Set([...prev, entity]))}
+                                    style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#92400e', display: 'flex', alignItems: 'center' }}
+                                    title="Cerrar alerta"
+                                >
+                                    <X size={16} />
+                                </button>
+                            </div>
+                        ))}
+                    </div>
+                )}
+
                 {/* TOTAL BUDGET BANNER */}
-                <div style={{ background: '#1c4233', borderRadius: '12px', padding: '1.5rem 2.5rem', color: 'white', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
-                    <div>
+                <div style={{ background: '#1c4233', borderRadius: '12px', padding: '1.5rem 2.5rem', color: 'white', marginBottom: '1.5rem', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: '2rem', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)' }}>
+                    <div style={{ minWidth: '250px' }}>
                         <h2 style={{ fontSize: '0.9rem', fontWeight: 600, color: '#e2e8f0', marginBottom: '0.25rem', letterSpacing: '0.5px' }}>Estado del Presupuesto Total</h2>
                         {isEditingBudget ? (
                             <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.5rem' }}>
-                                <span style={{ fontSize: '1.5rem', fontWeight: 800 }}>$</span>
+                                <span style={{ fontSize: '1.5rem', fontWeight: 800 }}>S/.</span>
                                 <input
                                     type="number"
                                     value={editBudgetValue}
@@ -698,19 +1097,19 @@ const Dashboard = () => {
                         <div style={{ fontSize: '0.75rem', color: '#94a3b8', marginTop: '0.5rem' }}>Última actualización hoy a las 09:42 AM</div>
                     </div>
 
-                    <div style={{ width: '45%' }}>
+                    <div style={{ flex: 1, minWidth: '280px' }}>
                         <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'flex-end', gap: '1rem', marginBottom: '0.5rem' }}>
-                            <div style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '1px', color: '#cbd5e1', fontStyle: 'italic' }}>UTILIZACIÓN</div>
-                            <div style={{ fontSize: '1.25rem', fontWeight: 800 }}>{utilizationLabel}</div>
+                            <div style={{ fontSize: '0.75rem', fontWeight: 700, letterSpacing: '1px', color: '#cbd5e1', fontStyle: 'italic' }}>PORCENTAJE DISPONIBLE</div>
+                            <div style={{ fontSize: '1.25rem', fontWeight: 800 }}>{availableLabel}</div>
                         </div>
                         <div style={{ width: '100%', height: '8px', background: 'rgba(255,255,255,0.15)', borderRadius: '4px', overflow: 'hidden' }}>
-                            <div style={{ width: `${utilizationPercent}%`, height: '100%', background: '#ffffff', borderRadius: '4px' }}></div>
+                            <div style={{ width: `${totalAvailablePercent}%`, height: '100%', background: '#10b981', borderRadius: '4px' }}></div>
                         </div>
                     </div>
 
                     {role === 'admin' && (
                         isAddingBudget ? (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: '8px' }}>
                                 <span style={{ fontSize: '1.25rem', fontWeight: 800, color: '#e2e8f0' }}>+</span>
                                 <input
                                     type="number"
@@ -740,13 +1139,38 @@ const Dashboard = () => {
                                 </button>
                             </div>
                         ) : (
-                            <div style={{ display: 'flex', gap: '8px' }}>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                                <button
+                                    onClick={handleOpenBudgetsModal}
+                                    style={{ background: 'white', color: '#0f172a', border: 'none', padding: '10px 16px', borderRadius: '8px', fontWeight: 600, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
+                                >
+                                    <Edit2 size={16} /> Configurar Presupuestos
+                                </button>
                                 <button
                                     onClick={() => setIsAddingBudget(true)}
                                     style={{ background: 'white', color: '#0f172a', border: 'none', padding: '10px 16px', borderRadius: '8px', fontWeight: 600, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
                                 >
-                                    <RefreshCcw size={16} /> Actualizar Presupuesto
+                                    <RefreshCcw size={16} /> Aumentar Total
                                 </button>
+                                {activePeriod ? (
+                                    <button
+                                        onClick={handleEndPeriod}
+                                        disabled={endingPeriod}
+                                        style={{ background: '#ef4444', color: 'white', border: 'none', padding: '10px 16px', borderRadius: '8px', fontWeight: 700, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
+                                    >
+                                        {endingPeriod ? <RefreshCw size={16} className="animate-spin" /> : <StopCircle size={16} />}
+                                        {endingPeriod ? 'Cerrando...' : 'FIN DE MES'}
+                                    </button>
+                                ) : (
+                                    <button
+                                        onClick={handleStartPeriod}
+                                        disabled={startingPeriod}
+                                        style={{ background: '#10b981', color: 'white', border: 'none', padding: '10px 16px', borderRadius: '8px', fontWeight: 700, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
+                                    >
+                                        {startingPeriod ? <RefreshCw size={16} className="animate-spin" /> : <PlayCircle size={16} />}
+                                        {startingPeriod ? 'Iniciando...' : 'INICIO DE MES'}
+                                    </button>
+                                )}
                                 <button
                                     onClick={() => setIsResetConfirmOpen(true)}
                                     style={{ background: '#ef4444', color: 'white', border: 'none', padding: '10px 16px', borderRadius: '8px', fontWeight: 700, fontSize: '0.9rem', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}
@@ -771,10 +1195,13 @@ const Dashboard = () => {
                         <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left' }}>
                             <thead>
                                 <tr style={{ borderBottom: '1px solid #f1f5f9' }}>
+                                    <th style={{ padding: '0.75rem 0', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.5px' }}>FECHA</th>
                                     <th style={{ padding: '0.75rem 0', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.5px' }}>MIEMBRO DEL EQUIPO</th>
                                     <th style={{ padding: '0.75rem 0', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.5px' }}>ID DE TICKET</th>
                                     <th style={{ padding: '0.75rem 0', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.5px' }}>NÚMERO DE OT</th>
-                                    <th style={{ padding: '0.75rem 0', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.5px' }}>MONTO ($)</th>
+                                    <th style={{ padding: '0.75rem 0', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.5px' }}>ENTIDAD</th>
+                                    <th style={{ padding: '0.75rem 0', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.5px' }}>ACTIVOS</th>
+                                    <th style={{ padding: '0.75rem 0', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.5px' }}>MONTO (S/.)</th>
                                     <th style={{ padding: '0.75rem 0', fontSize: '0.75rem', fontWeight: 700, color: '#94a3b8', letterSpacing: '0.5px', textAlign: 'right' }}>ACCIÓN</th>
                                 </tr>
                             </thead>
@@ -787,6 +1214,14 @@ const Dashboard = () => {
 
                                     return (
                                         <tr key={row.id} style={{ borderBottom: '1px solid #f8fafc' }}>
+                                            <td style={{ padding: '1rem 1rem 1rem 0' }}>
+                                                <input
+                                                    type="date"
+                                                    value={row.expense_date || new Date().toISOString().split('T')[0]}
+                                                    onChange={(e) => handleInputChange(row.id, 'expense_date', e.target.value)}
+                                                    style={{ width: '100%', minWidth: '120px', padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: '6px', fontSize: '0.85rem', color: '#64748b', background: '#f8fafc', outline: 'none' }}
+                                                />
+                                            </td>
                                             <td style={{ padding: '1.25rem 0', display: 'flex', alignItems: 'center', gap: '12px' }}>
                                                 <div style={{ width: '30px', height: '30px', background: '#f1f5f9', borderRadius: '50%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 800, color: '#0f172a', fontSize: '0.8rem', textTransform: 'uppercase' }}>
                                                     {initials}
@@ -797,13 +1232,15 @@ const Dashboard = () => {
                                                 </div>
                                             </td>
                                             <td style={{ padding: '1rem 1rem 1rem 0' }}>
-                                                <input
-                                                    type="text"
-                                                    placeholder="TK-..."
-                                                    value={row.ticket_value || ''}
-                                                    onChange={(e) => handleInputChange(row.id, 'ticket_value', e.target.value)}
-                                                    style={{ width: '100%', minWidth: '80px', padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: '6px', fontSize: '0.85rem', color: '#64748b', background: '#f8fafc', outline: 'none' }}
-                                                />
+                                                {!isEdwinOrCapex(row) && (
+                                                    <input
+                                                        type="text"
+                                                        placeholder="TK-..."
+                                                        value={row.ticket_value || ''}
+                                                        onChange={(e) => handleInputChange(row.id, 'ticket_value', e.target.value)}
+                                                        style={{ width: '100%', minWidth: '80px', padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: '6px', fontSize: '0.85rem', color: '#64748b', background: '#f8fafc', outline: 'none' }}
+                                                    />
+                                                )}
                                             </td>
                                             <td style={{ padding: '1rem 1rem 1rem 0' }}>
                                                 <input
@@ -813,6 +1250,41 @@ const Dashboard = () => {
                                                     onChange={(e) => handleInputChange(row.id, 'ot_value', e.target.value)}
                                                     style={{ width: '100%', minWidth: '80px', padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: '6px', fontSize: '0.85rem', color: '#64748b', background: '#f8fafc', outline: 'none' }}
                                                 />
+                                            </td>
+                                            <td style={{ padding: '1rem 1rem 1rem 0' }}>
+                                                {(row.name || '').toUpperCase() === 'EDWIN' ? (
+                                                    <div style={{ padding: '8px 12px', background: '#ede9fe', borderRadius: '6px', fontWeight: 700, color: '#7c3aed', border: '1px solid #c4b5fd', fontSize: '0.85rem' }}>
+                                                        CAPEX
+                                                    </div>
+                                                ) : (
+                                                    <select
+                                                        value={row.entidad || ''}
+                                                        onChange={(e) => handleInputChange(row.id, 'entidad', e.target.value)}
+                                                        style={{ width: '100%', minWidth: '100px', padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: '6px', fontSize: '0.85rem', color: '#64748b', background: '#f8fafc', outline: 'none' }}
+                                                    >
+                                                        <option value="">[Elegir...]</option>
+                                                        <option value="Plaza Vea">Plaza Vea</option>
+                                                        <option value="Vivanda">Vivanda</option>
+                                                        <option value="Makro">Makro</option>
+                                                        <option value="CAPEX">CAPEX (Admin)</option>
+                                                    </select>
+                                                )}
+                                            </td>
+                                            <td style={{ padding: '1rem 1rem 1rem 0' }}>
+                                                <select
+                                                    value={row.activos || ''}
+                                                    onChange={(e) => handleInputChange(row.id, 'activos', e.target.value)}
+                                                    style={{ width: '100%', minWidth: '150px', padding: '8px 12px', border: '1px solid #e2e8f0', borderRadius: '6px', fontSize: '0.85rem', color: '#64748b', background: '#f8fafc', outline: 'none' }}
+                                                >
+                                                    <option value="">[Elegir...]</option>
+                                                    <option value="Tableros Eléctricos">Tableros Eléctricos</option>
+                                                    <option value="UPS">UPS</option>
+                                                    <option value="Grupo Electrógenos">Grupo Electrógenos</option>
+                                                    <option value="Media Tensión">Media Tensión</option>
+                                                    <option value="Iluminación">Iluminación</option>
+                                                    <option value="ITSE">ITSE</option>
+                                                    <option value="Cableado y/o circuitos eléctricos">Cableado y/o circuitos eléctricos</option>
+                                                </select>
                                             </td>
                                             <td style={{ padding: '1rem 1rem 1rem 0' }}>
                                                 <input
@@ -889,7 +1361,7 @@ const Dashboard = () => {
                                 {/* Add Team Member Row */}
                                 {role === 'admin' && isAddingMember && (
                                     <tr style={{ background: '#f8fafc' }}>
-                                        <td colSpan={4} style={{ padding: '1rem 0' }}>
+                                        <td colSpan={5} style={{ padding: '1rem 0' }}>
                                             <div style={{ display: 'flex', gap: '8px' }}>
                                                 <input
                                                     type="text"
@@ -965,7 +1437,7 @@ const Dashboard = () => {
                                 </span>
                             </div>
 
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', maxHeight: '400px', overflowY: 'auto', paddingRight: '8px' }}>
                                 {history.length === 0 ? (
                                     <div style={{ textAlign: 'center', color: '#94a3b8', fontSize: '0.85rem', padding: '1rem 0' }}>
                                         No hay acciones recientes.
@@ -1025,13 +1497,92 @@ const Dashboard = () => {
                         </div>
 
                         <button onClick={handleDownloadExcel} style={{ width: '100%', background: '#ffffff', border: '1px solid #e2e8f0', color: '#0f172a', fontWeight: 700, padding: '14px', borderRadius: '12px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', boxShadow: '0 1px 2px 0 rgba(0,0,0,0.05)' }}>
-                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
                             Descargar como Excel
                         </button>
                     </div>
 
                 </div>
             </main>
+
+            {/* Budgets Configuration Modal */}
+            {isBudgetsModalOpen && (
+                <div style={{
+                    position: 'fixed',
+                    top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(15, 23, 42, 0.4)',
+                    backdropFilter: 'blur(4px)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    zIndex: 9999
+                }}>
+                    <div style={{
+                        background: 'white',
+                        padding: '2rem',
+                        borderRadius: '16px',
+                        boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+                        width: '100%',
+                        maxWidth: '500px'
+                    }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '1.5rem' }}>
+                            <div style={{ width: '40px', height: '40px', borderRadius: '10px', background: '#dcfce7', color: '#166534', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                                <Building2 size={24} />
+                            </div>
+                            <h3 style={{ fontSize: '1.25rem', fontWeight: 800, color: '#0f172a', margin: 0 }}>Configurar Presupuestos</h3>
+                        </div>
+                        
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginBottom: '2rem' }}>
+                            <div>
+                                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, color: '#1c4233', marginBottom: '4px' }}>OPEX Anual (presupuesto independiente) (S/.)</label>
+                                <input type="number" min="0" value={budgetsForm.opex_anual} onChange={e => setBudgetsForm({...budgetsForm, opex_anual: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }} />
+                            </div>
+                            <div>
+                                <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, color: '#64748b', marginBottom: '4px' }}>Presupuesto Total (S/.)</label>
+                                <input type="number" min="0" value={budgetsForm.total} onChange={e => setBudgetsForm({...budgetsForm, total: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }} />
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, color: '#10b981', marginBottom: '4px' }}>OPEX Plaza Vea (S/.)</label>
+                                    <input type="number" min="0" value={budgetsForm.plazavea} onChange={e => setBudgetsForm({...budgetsForm, plazavea: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }} />
+                                </div>
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, color: '#f59e0b', marginBottom: '4px' }}>OPEX Vivanda (S/.)</label>
+                                    <input type="number" min="0" value={budgetsForm.vivanda} onChange={e => setBudgetsForm({...budgetsForm, vivanda: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }} />
+                                </div>
+                            </div>
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, color: '#ef4444', marginBottom: '4px' }}>OPEX Makro (S/.)</label>
+                                    <input type="number" min="0" value={budgetsForm.makro} onChange={e => setBudgetsForm({...budgetsForm, makro: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }} />
+                                </div>
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '0.85rem', fontWeight: 700, color: '#8b5cf6', marginBottom: '4px' }}>CAPEX Anual (S/.)</label>
+                                    <input type="number" min="0" value={budgetsForm.capex} onChange={e => setBudgetsForm({...budgetsForm, capex: e.target.value})} style={{ width: '100%', padding: '10px', borderRadius: '8px', border: '1px solid #cbd5e1', outline: 'none' }} />
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style={{ display: 'flex', gap: '1rem' }}>
+                            <button
+                                onClick={() => setIsBudgetsModalOpen(false)}
+                                disabled={savingBudget}
+                                style={{ flex: 1, padding: '12px', background: '#f1f5f9', color: '#475569', fontWeight: 600, border: 'none', borderRadius: '10px', cursor: 'pointer' }}
+                            >
+                                Cancelar
+                            </button>
+                            <button
+                                onClick={handleSaveBudgetsForm}
+                                disabled={savingBudget}
+                                style={{ flex: 1, padding: '12px', background: '#1c4233', color: 'white', fontWeight: 700, border: 'none', borderRadius: '10px', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                            >
+                                {savingBudget ? <RefreshCw size={16} className="animate-spin" /> : <Save size={16} />}
+                                {savingBudget ? 'Guardando...' : 'Guardar Presupuestos'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Custom Delete Confirmation Modal */}
             {memberToDelete !== null && (
